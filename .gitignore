@@ -1,0 +1,23 @@
+.build/
+build/
+.swiftpm/
+.local-data/
+.DS_Store
+
+# Local secrets and collection databases
+.env
+.env.*
+!.env.example
+*.store
+*.store-shm
+*.store-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# Machine-specific editor state
+*.xcuserstate
+xcuserdata/
+.idea/
+.vscode/
