@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import ImageIO
 import SipfolioCore
 
 @main
@@ -12,6 +13,27 @@ struct SipfolioApp: App {
 
     init() {
         let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--verify-bundle-resources") {
+            guard arguments.indices.contains(index + 1) else {
+                print("Bundle resource verification requires an output file.")
+                exit(2)
+            }
+            do {
+                let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
+                let iconSource = iconURL.flatMap { CGImageSourceCreateWithURL($0 as CFURL, nil) }
+                let icon = iconSource.flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+                let font = PixelTypography.fontName
+                let diagnostics: [String: Any] = [
+                    "bundleIdentifier": Bundle.main.bundleIdentifier ?? "",
+                    "hasBundledIcon": iconURL != nil,
+                    "hasDecodedIcon": icon != nil,
+                    "hasPixelFont": NSFont(name: font, size: 12) != nil && font != "Menlo"
+                ]
+                let output = URL(fileURLWithPath: arguments[index + 1])
+                try JSONSerialization.data(withJSONObject: diagnostics, options: [.prettyPrinted, .sortedKeys]).write(to: output, options: .atomic)
+                exit(0)
+            } catch { print("Bundle resource verification failed: \(error.localizedDescription)"); exit(1) }
+        }
         #if DEBUG
         if arguments.contains("--configure-deepseek") {
             do {

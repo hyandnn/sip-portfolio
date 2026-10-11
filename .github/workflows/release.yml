@@ -50,8 +50,8 @@ jobs:
         with:
           name: macOS-preview
           path: build/dist
-      - name: Verify archived app on Intel runner
-        run: ./scripts/verify-release.sh
+      - name: Verify executable and resources on Intel runner
+        run: ./scripts/verify-release.sh --resources-only
 
   publish:
     needs: [package, verify-intel]

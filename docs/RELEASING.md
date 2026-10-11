@@ -19,7 +19,9 @@ make dist
 1. 修改 Info.plist 的应用版本与构建号，更新 CHANGELOG 和 `packaging/RELEASE_NOTES.md`。
 2. 完成 `make audit`、相关测试、`make dist` 与产物检查，提交源码，确认分支 CI 通过。
 3. 为该提交创建对应 `v<version>` 标签并推送。
-4. 发布工作流检查标签与版本一致，执行 CI 测试并构建通用安装包。在 Apple Silicon 与 Intel runner 中分别验证归档启动，成功后创建 **prerelease** 并上传文件。
+4. 发布工作流检查标签与版本一致，执行 CI 测试并构建通用安装包。在 Apple Silicon runner 验证归档启动，在 Intel runner 验证可执行文件与资源，成功后创建 **prerelease** 并上传文件。
+
+Intel CI 的图形启动曾触发 Metal 设备初始化断言。其验证使用 `./scripts/verify-release.sh --resources-only`，不创建 SwiftUI 窗口、不加载收藏；检查签名、运行可执行文件、解码图标和注册字体。它不代表已验证 Intel 图形界面，实体 Intel Mac 的安装与完整操作仍待验收。
 
 流程只使用 GitHub Actions 自带的仓库令牌，不需要上传个人 API 密钥。发布作业单独申请写入 release 的权限，其余作业仅有读取权限。工作流失败时不发布；不要通过移动已有版本标签掩盖失败。
 

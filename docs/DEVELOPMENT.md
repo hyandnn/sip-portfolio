@@ -64,6 +64,7 @@ make release
 | 参数 | 行为 |
 | --- | --- |
 | `--verify-app-shell <output.json>` | 检查启动图标与字体后退出；必须同时指定隔离的 `--data-directory` |
+| `--verify-bundle-resources <output.json>` | 不创建窗口或加载收藏，检查可执行文件、图标和字体，适用于图形设备不可用的 CI |
 | `--verify-cocktail-media <directory> --cocktail-name <name>` | 真实查询公开配方与下载图片，不访问个人收藏 |
 | `--verify-cocktail-photos <directory> --cocktail-name <name>` | 真实查询补充图源并重新核对来源，不访问个人收藏 |
 
