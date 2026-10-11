@@ -43,5 +43,6 @@
 - [隐私与联网行为](PRIVACY.md)：请求内容与本地凭据。
 - [第三方声明](../THIRD_PARTY_NOTICES.md)：字体、固定素材和联网来源。
 - [测试与验收](VALIDATION.md)：可重复检查与验证边界。
+- [安装包发布](RELEASING.md)：通用构建、DMG／ZIP、标签发布与签名范围。
 - [CHANGELOG](../CHANGELOG.md)：功能变更历史。
 - [ROADMAP](ROADMAP.md)：尚未实现的方向。

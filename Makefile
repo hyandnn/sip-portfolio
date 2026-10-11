@@ -5,7 +5,7 @@ export SWIFTPM_MODULECACHE_OVERRIDE := $(CURDIR)/.build/module-cache
 SPM_FLAGS = --disable-sandbox --cache-path .build/spm-cache --config-path .build/spm-config --security-path .build/spm-security
 TEST_FLAGS ?=
 
-.PHONY: check-tools build run test test-ci release icon audit
+.PHONY: check-tools build run test test-ci release universal dist icon audit
 check-tools:
 	@test -n "$(XCODE_DIR)" || { echo "Install full Xcode, or set XCODE_DIR to its Contents/Developer directory." >&2; exit 1; }
 	@XCODE_DIR="$(DEVELOPER_DIR)" ./scripts/find-xcode.sh >/dev/null
@@ -23,6 +23,11 @@ test-ci: check-tools
 release: check-tools
 	swift build -c release $(SPM_FLAGS)
 	./scripts/bundle.sh release "$$(swift build -c release $(SPM_FLAGS) --show-bin-path)"
+universal: check-tools
+	swift build -c release $(SPM_FLAGS) --product Sipfolio --arch arm64 --arch x86_64
+	./scripts/bundle.sh release "$$(swift build -c release $(SPM_FLAGS) --arch arm64 --arch x86_64 --show-bin-path)"
+dist: universal
+	./scripts/package-release.sh
 icon: check-tools
 	xcrun swift -module-cache-path .build/module-cache scripts/generate-icon.swift build/AppIcon.iconset
 	iconutil -c icns build/AppIcon.iconset -o packaging/AppIcon.icns

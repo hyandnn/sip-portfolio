@@ -1,0 +1,38 @@
+Sipfolio — macOS preview
+
+Requires macOS 14 or later. The package contains Apple Silicon and Intel
+executable slices. No Xcode, developer account or AI key is required for
+manual bottle and recipe collections.
+
+INSTALL
+Open the disk image and drag Sipfolio.app to Applications. Eject the disk
+image, then open Sipfolio from Applications. For the ZIP alternative,
+extract it and move Sipfolio.app to Applications before opening.
+
+This preview uses ad-hoc signing and has not been notarized by Apple.
+macOS may ask for additional confirmation on first launch. If you trust
+the official download and have verified its origin, follow Apple's
+instructions for approving that individual app:
+https://support.apple.com/102445
+
+FIRST USE
+Choose “新收藏” (Command-N), import your own bottle photo, check the cutout,
+enter a name and save. Recipes require ingredients and real instructions.
+The three shelves are bottles, recipes with photographs, and text recipes.
+AI is optional; configure your own DeepSeek key in Settings (Command-,).
+
+DATA AND UPDATES
+Quit Sipfolio before replacing it with a newer version. Your collection is
+stored separately in ~/Library/Application Support/Sipfolio/.
+To back up or migrate, quit the app and copy that entire directory,
+including photos and database companion files. AI keys are in Keychain
+and are not included in this backup.
+
+DOWNLOADS, SOURCE AND SUPPORT
+https://github.com/hyandnn/sip-portfolio/releases
+https://github.com/hyandnn/sip-portfolio
+
+The app has no preloaded personal collection. This preview's automated
+checks do not replace full manual acceptance or real Intel-Mac testing.
+Source is MIT licensed; fonts, fetched data and pictures retain their
+own rights and licenses. Font notices are included in the app resources.

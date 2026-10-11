@@ -18,9 +18,15 @@ Sipfolio 是一款 macOS 本地酒瓶与鸡尾酒收藏应用。用自己的照�
 
 同名酒瓶按「酒名＋口味＋年份」区分；口味是手动版本字段，AI 风味标签用于品鉴描述。配方可关联多个酒瓶，删除酒瓶不会删除配方。
 
-## 安装与启动
+## 下载与安装
 
-目前提供源码构建，尚未提供经过公证的下载包或 App Store 版本。
+在 [GitHub Releases](https://github.com/hyandnn/sip-portfolio/releases) 下载 macOS **预览安装包**：打开 DMG，将 Sipfolio 拖入 Applications，再从 Applications 启动；也可使用 ZIP 解压安装。
+
+需要 **macOS 14 或更新版本**。Universal 包包含 Apple Silicon 和 Intel 两种架构，手动收藏不需要 Xcode、账号或 API 密钥。真实 Intel Mac 安装与完整人工验收尚未完成，详见 [验证范围](docs/VALIDATION.md)。
+
+预览包采用 ad-hoc 签名，尚未经 Apple 公证，也未上架 App Store。首次打开可能需要系统对单个可信应用的确认；仅在核实下载来源时参考 [Apple 的启动说明](https://support.apple.com/zh-cn/102445)。发布页提供 SHA256 校验值。更新前退出旧版，再替换 Applications 中的应用；收藏保存在独立目录。
+
+### 从源码构建
 
 需要一台运行 **macOS 14 或更新版本**的 Mac，以及带 **Swift 6.0 或更新版本**的完整 Xcode。只有 Command Line Tools 不够。工程使用 Swift Package Manager，无第三方 Swift 包依赖；可以在 Xcode 中打开 `Package.swift` 编辑。
 
@@ -77,11 +83,12 @@ make build     # Debug 构建并打包应用
 make run       # 构建并打开应用
 make test      # 完整测试，包含需要本机 Vision 的抠图测试
 make test-ci   # 跳过需要 Neural Engine 的单项测试，供 CI 虚拟机使用
+make dist      # 构建通用架构应用，生成 DMG／ZIP 和校验值
 make audit     # 检查公开文件、私密信息模式与文档链接（需要 Python 3）
 make icon      # 从仓库内的最终 PNG 重新生成图标
 ```
 
-测试使用固定素材与模拟 HTTP，不需要密钥、个人收藏或在线服务。详情见 [开发指南](docs/DEVELOPMENT.md)、[测试与验收](docs/VALIDATION.md) 和 [贡献指南](CONTRIBUTING.md)。GitHub Actions 配置会检查仓库、执行 CI 测试并构建应用；本机完整测试另行覆盖 Vision。
+测试使用固定素材与模拟 HTTP，不需要密钥、个人收藏或在线服务。详情见 [开发指南](docs/DEVELOPMENT.md)、[测试与验收](docs/VALIDATION.md)、[安装包发布](docs/RELEASING.md) 和 [贡献指南](CONTRIBUTING.md)。GitHub Actions 检查仓库、执行 CI 测试并构建应用；版本标签触发预览安装包发布，本机完整测试另行覆盖 Vision。
 
 ## 来源与许可
 

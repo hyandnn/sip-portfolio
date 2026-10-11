@@ -55,7 +55,7 @@ make release
 
 图标导出使用 AppKit 与系统 `iconutil`，不需要图像生成工具或额外密钥。当前资源说明见 [artwork](../packaging/artwork/README.md)。应用标识与钥匙串服务标识保持稳定，避免破坏既有凭据。
 
-本工程尚未建立 Developer ID 签名、公证、通用架构安装包或 App Store 分发流程。正式分发时应另行配置签名，并依据 [TheCocktailDB 官方 API 说明](https://www.thecocktaildb.com/api.php)使用生产访问；公共开发测试 key 不是私密凭据。
+`make dist` 构建通用架构并生成 DMG／ZIP，版本标签工作流发布 GitHub 预览包，详见 [安装包发布](RELEASING.md)。本工程尚未配置 Developer ID 签名、公证或 App Store 分发；商店发布时应依据 [TheCocktailDB 官方 API 说明](https://www.thecocktaildb.com/api.php)配置生产访问，公共开发测试 key 不是私密凭据。
 
 ## 诊断入口
 
