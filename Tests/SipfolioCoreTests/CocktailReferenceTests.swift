@@ -1,3 +1,4 @@
+import SipfolioTestSupport
 import Testing
 import Foundation
 import ImageIO
@@ -5,7 +6,7 @@ import SwiftData
 @testable import SipfolioCore
 
 private func referenceFixture() throws -> Data {
-    let path = Bundle.module.url(forResource: "gin-tonic-reference", withExtension: "json", subdirectory: "Fixtures")!
+    let path = TestResources.url(forResource: "gin-tonic-reference", withExtension: "json")!
     return try Data(contentsOf: path)
 }
 
@@ -47,7 +48,7 @@ func wrongRecipesAndUntrustedPhotoURLsAreRejected() async throws {
 
 @Test
 func officialPhotoAvailabilityDoesNotDependOnCCConfirmation() throws {
-    let path = try #require(Bundle.module.url(forResource: "martini-reference", withExtension: "json", subdirectory: "Fixtures"))
+    let path = try #require(TestResources.url(forResource: "martini-reference", withExtension: "json"))
     let data = try Data(contentsOf: path)
     let reference = try CocktailReferenceService.decode(data, matching: "Martini")
     #expect(reference.photoURL?.absoluteString == "https://www.thecocktaildb.com/images/media/drink/71t8581504353095.jpg")
@@ -75,13 +76,22 @@ func automaticRecommendationsMergeBottleSourcesAndRespectOptOut() throws {
     let image = try testPNG()
     let knowledge = DrinkKnowledge(name: "测试金酒", category: "金酒", confidence: "high", introduction: "", flavors: [], cocktails: ["Gin & Tonic", "金汤力", "Martini"])
     let first = try store.add(name: "第一瓶", category: "金酒", notes: "", original: image, sticker: image, thumbnail: image, usesOriginalPhoto: true, knowledge: knowledge)
+    #expect(try store.allCocktails().isEmpty)
+    #expect(store.pendingRecommendations.count == 2)
+    _ = try store.admitRecommendation(CocktailNames.key("金汤力"), reference: CocktailReferenceService.decode(referenceFixture(), matching: "金汤力"))
+    let martini = try Data(contentsOf: #require(TestResources.url(forResource: "martini-reference", withExtension: "json")))
+    _ = try store.admitRecommendation(CocktailNames.key("Martini"), reference: CocktailReferenceService.decode(martini, matching: "Martini"))
     #expect(try store.allCocktails().count == 2)
     let gt = try #require(store.allCocktails().first { CocktailNames.key($0.name) == CocktailNames.key("金汤力") })
-    try store.updateCocktail(gt, name: gt.name, ingredients: "我的手动比例", steps: "手动步骤", glass: "", garnish: "", notes: "我的备注", generatedByAI: false)
+    try store.updateCocktail(gt, name: gt.name, ingredients: "我的手动比例 — 45 ml", steps: "手动步骤", glass: "", garnish: "", notes: "我的备注", generatedByAI: false)
     let second = try store.add(name: "第二瓶", category: "金酒", notes: "", original: image, sticker: image, thumbnail: image, usesOriginalPhoto: true, knowledge: knowledge)
+    _ = try store.admitRecommendation(CocktailNames.key("金汤力"), reference: nil)
+    _ = try store.admitRecommendation(CocktailNames.key("Martini"), reference: nil)
     #expect(gt.linkedSources.map(\.id) == [first.id, second.id])
-    #expect(gt.ingredients == "我的手动比例" && gt.notes == "我的备注")
+    #expect(gt.ingredients == "我的手动比例 — 45 ml" && gt.notes == "我的备注")
     _ = try store.collectRecommendations(knowledge, for: second)
+    _ = try store.admitRecommendation(CocktailNames.key("金汤力"), reference: nil)
+    _ = try store.admitRecommendation(CocktailNames.key("Martini"), reference: nil)
     #expect(gt.linkedSources.count == 2)
     #expect(try store.allCocktails().count == 2)
     _ = try store.add(name: "第三瓶", category: "金酒", notes: "", original: image, sticker: image, thumbnail: image, usesOriginalPhoto: true, knowledge: DrinkKnowledge(name: "第三瓶", category: "金酒", confidence: "high", introduction: "", flavors: [], cocktails: ["Mojito"]), includeRecommendedCocktails: false)
@@ -95,10 +105,10 @@ func mediaAndReferencePersistWithoutReplacingUserRecipe() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("SipfolioRecipeMedia-\(UUID())")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try CollectionStore(root: root)
-    let recipe = try store.addCocktail(name: "Gin & Tonic", ingredients: "手动材料", steps: "我的步骤", glass: "", notes: "私人备注")
+    let recipe = try store.addCocktail(name: "Gin & Tonic", ingredients: "手动材料 — 45 ml", steps: "我的步骤", glass: "", notes: "私人备注")
     let reference = try CocktailReferenceService.decode(referenceFixture(), matching: recipe.name)
     try store.applyReference(reference, to: recipe.id)
-    #expect(recipe.ingredients == "手动材料" && recipe.steps == "我的步骤" && recipe.notes == "私人备注")
+    #expect(recipe.ingredients == "手动材料 — 45 ml" && recipe.steps == "我的步骤" && recipe.notes == "私人备注")
     #expect(recipe.glass == "高球杯")
     let image = try testPNG()
     let info = CocktailPhotoMetadata(provider: "TheCocktailDB", pageURL: reference.pageURL.absoluteString, credit: reference.photoCredit, creativeCommonsConfirmed: true)
@@ -127,20 +137,24 @@ private actor PhotoReferenceTransport: AIHTTPTransport {
 
 @Test @MainActor
 func cocktailEnrichmentKeepsTheRealPhotoBackground() async throws {
-    let path = Bundle.module.url(forResource: "gin-tonic", withExtension: "jpg", subdirectory: "Fixtures")!
+    let path = TestResources.url(forResource: "gin-tonic", withExtension: "jpg")!
     let sourcePhoto = try Data(contentsOf: path)
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("SipfolioOriginalCocktail-\(UUID())")
     defer { try? FileManager.default.removeItem(at: root) }
     let store = try CollectionStore(root: root)
-    let recipe = try store.addCocktail(name: "Gin & Tonic", ingredients: "", steps: "")
+    let knowledge = DrinkKnowledge(name: "金酒", category: "金酒", confidence: "high", introduction: "", flavors: [], cocktails: ["Gin & Tonic"])
+    let bottleImage = try testPNG()
+    _ = try store.add(name: "金酒", category: "金酒", notes: "", original: bottleImage, sticker: bottleImage, thumbnail: bottleImage, usesOriginalPhoto: true, knowledge: knowledge)
+    #expect(try store.allCocktails().isEmpty)
     let transport = PhotoReferenceTransport(reference: try referenceFixture(), photo: sourcePhoto)
     let coordinator = CocktailEnrichmentCoordinator(store: store, referenceService: CocktailReferenceService(transport: transport))
     coordinator.startPending()
     let deadline = ContinuousClock.now.advanced(by: .seconds(10))
-    while !coordinator.activeIDs.isEmpty, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(40)) }
+    while coordinator.isWorking, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(40)) }
     #expect(coordinator.activeIDs.isEmpty)
     #expect(coordinator.errors.isEmpty)
-    #expect(!recipe.ingredients.isEmpty && !recipe.steps.isEmpty)
+    let recipe = try #require(store.allCocktails().first)
+    #expect(CocktailAdmission.accepts(ingredients: recipe.ingredients, steps: recipe.steps))
     let metadata = try #require(try store.cocktailPhotoMetadata(for: recipe.id))
     #expect(metadata.usesOriginalPhoto && metadata.provider == "TheCocktailDB")
     let original = try Data(contentsOf: store.cocktailImages.imageURL(for: recipe.id, original: true))
@@ -164,6 +178,7 @@ func cocktailEnrichmentKeepsTheRealPhotoBackground() async throws {
     #expect(max(thumbImage.width, thumbImage.height) == 420)
     if let directory = ProcessInfo.processInfo.environment["SIPFOLIO_QA_OUTPUT"] {
         let output = URL(fileURLWithPath: directory)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         try original.write(to: output.appendingPathComponent("cocktail-gin-tonic-original.png"))
         try thumbnail.write(to: output.appendingPathComponent("cocktail-gin-tonic-thumbnail.png"))
     }
@@ -183,7 +198,7 @@ private enum LegacyRecipe040 {
         var sourceDrinkName: String?
         var generatedByAI: Bool
         init(id: UUID, source: UUID) {
-            self.id = id; name = "Martini"; ingredients = "旧版手动材料"; steps = "旧版步骤"
+            self.id = id; name = "Martini"; ingredients = "旧版手动材料 — 45 ml"; steps = "旧版步骤"
             glass = "鸡尾酒杯"; garnish = "橄榄"; notes = "旧版备注"; createdAt = Date(timeIntervalSince1970: 1_700_000_000)
             sourceDrinkID = source; sourceDrinkName = "旧版金酒"; generatedByAI = false
         }
@@ -205,7 +220,7 @@ func version040RecipesMigrateWithTheirExistingBottleLinks() throws {
     }
     let current = try CollectionStore(root: root)
     let recipe = try #require(current.allCocktails().first)
-    #expect(recipe.id == id && recipe.ingredients == "旧版手动材料" && recipe.notes == "旧版备注")
+    #expect(recipe.id == id && recipe.ingredients == "旧版手动材料 — 45 ml" && recipe.notes == "旧版备注")
     #expect(recipe.sourcesJSON == nil && recipe.referenceURL == nil && recipe.referenceProvider == nil)
     #expect(recipe.linkedSources == [CocktailBottleSource(id: bottleID, name: "旧版金酒")])
     let reopened = try CollectionStore(root: root)

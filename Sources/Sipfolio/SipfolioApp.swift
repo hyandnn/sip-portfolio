@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import ImageIO
 import SipfolioCore
 
 @main
@@ -12,6 +13,28 @@ struct SipfolioApp: App {
 
     init() {
         let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--verify-bundle-resources") {
+            guard arguments.indices.contains(index + 1) else {
+                print("Bundle resource verification requires an output file.")
+                exit(2)
+            }
+            do {
+                let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
+                let iconSource = iconURL.flatMap { CGImageSourceCreateWithURL($0 as CFURL, nil) }
+                let icon = iconSource.flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) }
+                let font = PixelTypography.fontName
+                let diagnostics: [String: Any] = [
+                    "bundleIdentifier": Bundle.main.bundleIdentifier ?? "",
+                    "hasBundledIcon": iconURL != nil,
+                    "hasDecodedIcon": icon != nil,
+                    "hasPixelFont": NSFont(name: font, size: 12) != nil && font != "Menlo"
+                ]
+                let output = URL(fileURLWithPath: arguments[index + 1])
+                try JSONSerialization.data(withJSONObject: diagnostics, options: [.prettyPrinted, .sortedKeys]).write(to: output, options: .atomic)
+                exit(0)
+            } catch { print("Bundle resource verification failed: \(error.localizedDescription)"); exit(1) }
+        }
+        #if DEBUG
         if arguments.contains("--configure-deepseek") {
             do {
                 guard let key = readLine() else { throw DeepSeekError.invalidKey }
@@ -54,6 +77,12 @@ struct SipfolioApp: App {
             RunLoop.main.run()
             exit(1)
         }
+        #else
+        if arguments.contains(where: { ["--configure-deepseek", "--verify-deepseek", "--verify-cocktail"].contains($0) }) {
+            print("Live AI diagnostics require a Debug build; configure AI in the app settings.")
+            exit(2)
+        }
+        #endif
         if let index = arguments.firstIndex(of: "--verify-cocktail-media"), arguments.indices.contains(index + 1) {
             let output = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
             let cocktailName: String
@@ -79,11 +108,42 @@ struct SipfolioApp: App {
             RunLoop.main.run()
             exit(1)
         }
+        if let index = arguments.firstIndex(of: "--verify-cocktail-photos"), arguments.indices.contains(index + 1) {
+            let output = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+            let nameIndex = arguments.firstIndex(of: "--cocktail-name")
+            let name = nameIndex.flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil } ?? "Paper Plane"
+            Task.detached {
+                do {
+                    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+                    let service = CocktailPhotoService()
+                    let result = try await service.search(name: name)
+                    try JSONEncoder().encode(result.candidates).write(to: output.appendingPathComponent("candidates.json"), options: .atomic)
+                    guard !result.candidates.isEmpty else { throw CocktailPhotoError.unavailable }
+                    // Verify both a direct Commons source and an Openverse Flickr source when returned.
+                    let choices = [result.candidates.first, result.candidates.first { $0.origin == .openverseFlickr }].compactMap { $0 }
+                    for (index, candidate) in choices.enumerated() {
+                        let (data, metadata) = try await service.download(candidate, searchTerm: name)
+                        let original = try await BottleCutoutService().normalizedPNG(from: data, maxPixelSize: 1600)
+                        try original.write(to: output.appendingPathComponent("photo-\(index).png"), options: .atomic)
+                        try JSONEncoder().encode(metadata).write(to: output.appendingPathComponent("source-\(index).json"), options: .atomic)
+                    }
+                    print("Public image fallback search and source-verified photo download succeeded: \(result.candidates.count) candidates, \(choices.count) downloads.")
+                    for notice in result.notices { print(notice) }
+                    exit(0)
+                } catch { print(error.localizedDescription); exit(1) }
+            }
+            RunLoop.main.run()
+            exit(1)
+        }
         let root: URL
         if let index = arguments.firstIndex(of: "--data-directory"), arguments.indices.contains(index + 1) {
             root = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
         } else {
             root = CollectionStore.defaultRoot
+        }
+        if arguments.contains("--verify-app-shell"), root.standardizedFileURL.resolvingSymlinksInPath() == CollectionStore.defaultRoot.standardizedFileURL.resolvingSymlinksInPath() {
+            print("App-shell verification requires an isolated --data-directory.")
+            exit(2)
         }
         do {
             let collection = try CollectionStore(root: root)

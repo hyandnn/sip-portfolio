@@ -57,6 +57,8 @@ public final class CollectionStore {
     public let root: URL
     public private(set) var knowledgeRevision = 0
     public private(set) var cocktailImageRevision = 0
+    public private(set) var recommendationRevision = 0
+    public private(set) var pendingRecommendations: [CocktailRecommendationRequest] = []
 
     public init(root: URL, inMemory: Bool = false) throws {
         self.root = root
@@ -69,6 +71,10 @@ public final class CollectionStore {
             : ModelConfiguration(schema: schema, url: root.appendingPathComponent("Sipfolio.store"), cloudKitDatabase: .none)
         container = try ModelContainer(for: schema, configurations: [configuration])
         container.mainContext.autosaveEnabled = false
+        let queueURL = root.appendingPathComponent("recommendations.json")
+        if FileManager.default.fileExists(atPath: queueURL.path) {
+            pendingRecommendations = try JSONDecoder().decode([CocktailRecommendationRequest].self, from: Data(contentsOf: queueURL))
+        }
     }
 
     public static var defaultRoot: URL {
@@ -86,13 +92,15 @@ public final class CollectionStore {
         let drink = Drink(name: cleanName, category: CategoryHistory.normalized(category), notes: notes.trimmingCharacters(in: .whitespacesAndNewlines), usesOriginalPhoto: usesOriginalPhoto, tasteVariant: variant, bottleYear: year, collectionDate: collectionDate)
         try images.save(id: drink.id, original: original, sticker: sticker, thumbnail: thumbnail, knowledge: knowledge)
         let context = container.mainContext
+        let previousQueue = pendingRecommendations
         context.insert(drink)
         do {
-            if includeRecommendedCocktails, let knowledge { _ = try insertRecommendations(knowledge, for: drink) }
+            if includeRecommendedCocktails, let knowledge { _ = try queueRecommendations(knowledge, for: drink) }
             try context.save()
             if knowledge != nil { knowledgeRevision += 1 }
         } catch {
             context.rollback()
+            try? saveRecommendationQueue(previousQueue)
             try? images.remove(id: drink.id)
             throw error
         }
@@ -121,16 +129,18 @@ public final class CollectionStore {
         try validateUniqueWine(name.trimmingCharacters(in: .whitespacesAndNewlines), tasteVariant: drink.tasteVariant, bottleYear: drink.bottleYear, excluding: drink.id)
         let url = images.knowledgeURL(for: drink.id)
         let previous = FileManager.default.fileExists(atPath: url.path) ? try Data(contentsOf: url) : nil
+        let previousQueue = pendingRecommendations
         try images.saveKnowledge(knowledge, for: drink.id)
         do {
             drink.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
             drink.category = CategoryHistory.normalized(knowledge.category ?? drink.category)
-            _ = try insertRecommendations(knowledge, for: drink)
+            _ = try queueRecommendations(knowledge, for: drink)
             try container.mainContext.save()
             knowledgeRevision += 1
         }
         catch {
             container.mainContext.rollback()
+            try? saveRecommendationQueue(previousQueue)
             if let previous { try? previous.write(to: url, options: .atomic) }
             else { try? FileManager.default.removeItem(at: url) }
             throw error
@@ -157,34 +167,142 @@ public final class CollectionStore {
     }
 
     @discardableResult
-    public func collectRecommendations(_ knowledge: DrinkKnowledge, for drink: Drink) throws -> [CocktailRecipe] {
-        do {
-            let recipes = try insertRecommendations(knowledge, for: drink)
-            try container.mainContext.save()
-            return recipes
-        } catch { container.mainContext.rollback(); throw error }
+    public func collectRecommendations(_ knowledge: DrinkKnowledge, for drink: Drink) throws -> [CocktailRecommendationRequest] {
+        try queueRecommendations(knowledge, for: drink)
     }
 
-    private func insertRecommendations(_ knowledge: DrinkKnowledge, for drink: Drink) throws -> [CocktailRecipe] {
-        var existing = try allCocktails()
-        var result: [CocktailRecipe] = []
-        let sourceName = [drink.name, drink.variantDescription].filter { !$0.isEmpty }.joined(separator: " · ")
+    private func queueRecommendations(_ knowledge: DrinkKnowledge, for drink: Drink) throws -> [CocktailRecommendationRequest] {
+        var queue = pendingRecommendations
+        let source = CocktailBottleSource(id: drink.id, name: [drink.name, drink.variantDescription].filter { !$0.isEmpty }.joined(separator: " · "))
+        var result: [CocktailRecommendationRequest] = []
         for value in knowledge.cocktails {
             let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty else { continue }
             let key = CocktailNames.key(name)
-            let recipe: CocktailRecipe
-            if let saved = existing.first(where: { CocktailNames.key($0.name) == key }) { recipe = saved }
-            else {
-                recipe = CocktailRecipe(name: name, sourceDrinkID: drink.id, sourceDrinkName: sourceName)
-                container.mainContext.insert(recipe); existing.append(recipe)
-            }
-            var sources = recipe.linkedSources
-            if !sources.contains(where: { $0.id == drink.id }) { sources.append(CocktailBottleSource(id: drink.id, name: sourceName)) }
-            recipe.sourcesJSON = String(data: try JSONEncoder().encode(sources), encoding: .utf8)
-            if !result.contains(where: { $0.id == recipe.id }) { result.append(recipe) }
+            if let index = queue.firstIndex(where: { $0.id == key }) {
+                if !queue[index].sources.contains(where: { $0.id == source.id }) { queue[index].sources.append(source) }
+            } else { queue.append(CocktailRecommendationRequest(name: name, sources: [source])) }
+            if !result.contains(where: { $0.id == key }), let request = queue.first(where: { $0.id == key }) { result.append(request) }
         }
+        try saveRecommendationQueue(queue)
         return result
+    }
+
+    private func saveRecommendationQueue(_ queue: [CocktailRecommendationRequest]) throws {
+        try JSONEncoder().encode(queue).write(to: root.appendingPathComponent("recommendations.json"), options: .atomic)
+        pendingRecommendations = queue
+        recommendationRevision += 1
+    }
+
+    public func finishRecommendation(_ key: String) throws {
+        try saveRecommendationQueue(pendingRecommendations.filter { $0.id != key })
+    }
+
+    /// The recommendation is admitted only after its complete, measured recipe is available.
+    @discardableResult
+    public func admitRecommendation(_ key: String, reference: CocktailReference?) throws -> CocktailRecipe? {
+        guard let request = pendingRecommendations.first(where: { $0.id == key }) else { return nil }
+        let existing = try allCocktails().first { CocktailNames.key($0.name) == key && CocktailAdmission.accepts(ingredients: $0.ingredients, steps: $0.steps) }
+        let recipe: CocktailRecipe
+        if let existing { recipe = existing }
+        else {
+            guard let reference, CocktailNames.key(reference.suggestion.name) == key, CocktailAdmission.accepts(reference.suggestion) else { return nil }
+            var legacy: ArchivedCocktailRecipe?
+            if let id = request.legacyRecipeID {
+                let archive = try JSONDecoder().decode([ArchivedCocktailRecipe].self, from: Data(contentsOf: root.appendingPathComponent("incomplete-recipes-archive.json")))
+                legacy = archive.first { $0.id == id }
+            }
+            recipe = CocktailRecipe(id: legacy?.id ?? UUID(), name: request.name,
+                                    ingredients: legacy?.ingredients.isEmpty == false ? legacy!.ingredients : reference.suggestion.ingredientsText,
+                                    steps: legacy?.steps.isEmpty == false ? legacy!.steps : reference.suggestion.stepsText,
+                                    glass: legacy?.glass.isEmpty == false ? legacy!.glass : reference.suggestion.glass,
+                                    garnish: legacy?.garnish.isEmpty == false ? legacy!.garnish : reference.suggestion.garnish,
+                                    notes: legacy?.notes ?? "", createdAt: legacy?.createdAt ?? .now, generatedByAI: legacy?.generatedByAI ?? false)
+            guard CocktailAdmission.accepts(ingredients: recipe.ingredients, steps: recipe.steps) else { return nil }
+            recipe.referenceURL = reference.pageURL.absoluteString
+            recipe.referenceProvider = "TheCocktailDB"
+            container.mainContext.insert(recipe)
+        }
+        var sources = recipe.linkedSources
+        for source in request.sources where !sources.contains(where: { $0.id == source.id }) { sources.append(source) }
+        recipe.sourcesJSON = String(data: try JSONEncoder().encode(sources), encoding: .utf8)
+        do { try container.mainContext.save() }
+        catch { container.mainContext.rollback(); throw error }
+        if let id = request.legacyRecipeID { try markArchivedRecipeResolved(id) }
+        try finishRecommendation(key)
+        return recipe
+    }
+
+    /// Preserve legacy data and photos locally before taking unusable entries out of the collection.
+    public func archiveIncompleteCocktails() throws {
+        let incomplete = try allCocktails().filter { !CocktailAdmission.accepts(ingredients: $0.ingredients, steps: $0.steps) }
+        guard !incomplete.isEmpty else { return }
+        let archiveURL = root.appendingPathComponent("incomplete-recipes-archive.json")
+        var archive = FileManager.default.fileExists(atPath: archiveURL.path)
+            ? try JSONDecoder().decode([ArchivedCocktailRecipe].self, from: Data(contentsOf: archiveURL)) : []
+        for recipe in incomplete where !archive.contains(where: { $0.id == recipe.id }) { archive.append(ArchivedCocktailRecipe(recipe)) }
+        try JSONEncoder().encode(archive).write(to: archiveURL, options: .atomic)
+        var queue = pendingRecommendations
+        for recipe in incomplete where !recipe.linkedSources.isEmpty && (recipe.ingredients.isEmpty || CocktailAdmission.accepts(ingredients: recipe.ingredients, steps: "制作步骤")) {
+            let key = CocktailNames.key(recipe.name)
+            if let index = queue.firstIndex(where: { $0.id == key }) {
+                for source in recipe.linkedSources where !queue[index].sources.contains(where: { $0.id == source.id }) { queue[index].sources.append(source) }
+                if queue[index].legacyRecipeID == nil { queue[index].legacyRecipeID = recipe.id }
+            } else {
+                var request = CocktailRecommendationRequest(name: recipe.name, sources: recipe.linkedSources)
+                request.legacyRecipeID = recipe.id
+                queue.append(request)
+            }
+        }
+        try saveRecommendationQueue(queue)
+        for recipe in incomplete { container.mainContext.delete(recipe) }
+        do { try container.mainContext.save() }
+        catch { container.mainContext.rollback(); throw error }
+        // Their media directories stay with the recovery archive; no user photo is destroyed.
+    }
+
+    /// A source quantity that cannot become a ratio does not make an otherwise usable recipe invalid.
+    public func restoreUsableArchivedCocktails() throws {
+        let archiveURL = root.appendingPathComponent("incomplete-recipes-archive.json")
+        guard FileManager.default.fileExists(atPath: archiveURL.path) else { return }
+        var archive = try JSONDecoder().decode([ArchivedCocktailRecipe].self, from: Data(contentsOf: archiveURL))
+        var existing = try allCocktails()
+        var changed = false, archiveChanged = false
+        for index in archive.indices {
+            let value = archive[index]
+            guard value.restoredAt == nil, CocktailAdmission.accepts(ingredients: value.ingredients, steps: value.steps) else { continue }
+            archive[index].restoredAt = .now; archiveChanged = true
+            guard !existing.contains(where: { $0.id == value.id }) else { continue }
+            if let saved = existing.first(where: { CocktailNames.key($0.name) == CocktailNames.key(value.name) }) {
+                var sources = saved.linkedSources
+                for source in value.sources where !sources.contains(where: { $0.id == source.id }) { sources.append(source) }
+                if sources != saved.linkedSources {
+                    saved.sourcesJSON = String(data: try JSONEncoder().encode(sources), encoding: .utf8)
+                    changed = true
+                }
+                continue
+            }
+            let recipe = CocktailRecipe(id: value.id, name: value.name, ingredients: value.ingredients, steps: value.steps,
+                                        glass: value.glass, garnish: value.garnish, notes: value.notes, createdAt: value.createdAt,
+                                        generatedByAI: value.generatedByAI)
+            recipe.sourcesJSON = String(data: try JSONEncoder().encode(value.sources), encoding: .utf8)
+            recipe.referenceURL = value.referenceURL; recipe.referenceProvider = value.referenceProvider
+            container.mainContext.insert(recipe); existing.append(recipe); changed = true
+        }
+        if changed {
+            do { try container.mainContext.save() }
+            catch { container.mainContext.rollback(); throw error }
+        }
+        if archiveChanged { try JSONEncoder().encode(archive).write(to: archiveURL, options: .atomic) }
+    }
+
+    private func markArchivedRecipeResolved(_ id: UUID) throws {
+        let url = root.appendingPathComponent("incomplete-recipes-archive.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        var archive = try JSONDecoder().decode([ArchivedCocktailRecipe].self, from: Data(contentsOf: url))
+        guard let index = archive.firstIndex(where: { $0.id == id && $0.restoredAt == nil }) else { return }
+        archive[index].restoredAt = .now
+        try JSONEncoder().encode(archive).write(to: url, options: .atomic)
     }
 
     public func applyReference(_ reference: CocktailReference, to recipeID: UUID) throws {
@@ -231,6 +349,7 @@ public final class CollectionStore {
     public func addCocktail(name: String, ingredients: String, steps: String, glass: String = "", garnish: String = "", notes: String = "", sourceDrinkID: UUID? = nil, sourceDrinkName: String? = nil, generatedByAI: Bool = false) throws -> CocktailRecipe {
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanName.isEmpty else { throw CocktailError.emptyName }
+        guard CocktailAdmission.accepts(ingredients: ingredients, steps: steps) else { throw CocktailError.incompleteRecipe }
         let recipe = CocktailRecipe(name: cleanName, ingredients: ingredients.trimmingCharacters(in: .whitespacesAndNewlines), steps: steps.trimmingCharacters(in: .whitespacesAndNewlines), glass: glass.trimmingCharacters(in: .whitespacesAndNewlines), garnish: garnish.trimmingCharacters(in: .whitespacesAndNewlines), notes: notes.trimmingCharacters(in: .whitespacesAndNewlines), sourceDrinkID: sourceDrinkID, sourceDrinkName: cleanOptional(sourceDrinkName ?? ""), generatedByAI: generatedByAI)
         container.mainContext.insert(recipe)
         do { try container.mainContext.save() }
@@ -241,6 +360,7 @@ public final class CollectionStore {
     public func updateCocktail(_ recipe: CocktailRecipe, name: String, ingredients: String, steps: String, glass: String, garnish: String, notes: String, generatedByAI: Bool) throws {
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanName.isEmpty else { throw CocktailError.emptyName }
+        guard CocktailAdmission.accepts(ingredients: ingredients, steps: steps) else { throw CocktailError.incompleteRecipe }
         recipe.name = cleanName
         recipe.ingredients = ingredients.trimmingCharacters(in: .whitespacesAndNewlines)
         recipe.steps = steps.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -254,6 +374,7 @@ public final class CollectionStore {
 
     public func deleteCocktail(_ recipe: CocktailRecipe) throws {
         let id = recipe.id
+        try markArchivedRecipeResolved(id)
         container.mainContext.delete(recipe)
         do { try container.mainContext.save() }
         catch { container.mainContext.rollback(); throw error }

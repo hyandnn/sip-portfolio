@@ -3,45 +3,70 @@ import SwiftData
 import UniformTypeIdentifiers
 import SipfolioCore
 
+private struct CocktailPhotoInventoryKey: Equatable {
+    let ids: [UUID]
+    let revision: Int
+}
+
 struct CollectionView: View {
     let store: CollectionStore
     let enrichment: CocktailEnrichmentCoordinator?
+    private let onShelfChange: ((CollectionShelf) -> Void)?
     @Binding var isAdding: Bool
     @Query(sort: \Drink.createdAt, order: .reverse) private var drinks: [Drink]
     @Query(sort: \CocktailRecipe.createdAt, order: .reverse) private var cocktails: [CocktailRecipe]
     @State private var showingCocktails = false
     @State private var category: String?
-    @State private var search = ""
+    @State private var bottleSearch = ""
+    @State private var cocktailSearch = ""
     @State private var selectedDrink: Drink?
     @State private var selectedCocktail: CocktailRecipe?
     @State private var droppedURL: URL?
-    @State private var sortOrder = SortOrder.newest
+    @State private var bottleSortOrder = SortOrder.newest
+    @State private var cocktailSortOrder = SortOrder.newest
+    @State private var cocktailBook = CocktailCollectionBook.photos
+    @State private var cocktailPhotoIDs: Set<UUID> = []
+    @State private var photoInventoryLoaded = false
     @State private var dropTargeted = false
     @State private var cleanupWarning: String?
     @State private var collectingRecommendations = false
     @State private var recommendationMessage: String?
 
     enum SortOrder: String, CaseIterable { case newest = "最近收藏", oldest = "最早收藏", name = "名称排序" }
-    init(store: CollectionStore, isAdding: Binding<Bool>, initiallyShowingCocktails: Bool = false, enrichment: CocktailEnrichmentCoordinator? = nil) {
+    init(store: CollectionStore, isAdding: Binding<Bool>, initiallyShowingCocktails: Bool = false, enrichment: CocktailEnrichmentCoordinator? = nil, initialSearch: String = "", initialCocktailBook: CocktailCollectionBook = .photos, onShelfChange: ((CollectionShelf) -> Void)? = nil) {
         self.store = store; self.enrichment = enrichment; _isAdding = isAdding; _showingCocktails = State(initialValue: initiallyShowingCocktails)
+        self.onShelfChange = onShelfChange
+        _bottleSearch = State(initialValue: initiallyShowingCocktails ? "" : initialSearch)
+        _cocktailSearch = State(initialValue: initiallyShowingCocktails ? initialSearch : "")
+        _cocktailBook = State(initialValue: initialCocktailBook)
     }
+    private var searchBinding: Binding<String> { showingCocktails ? $cocktailSearch : $bottleSearch }
+    private var currentShelf: CollectionShelf { showingCocktails ? (cocktailBook == .photos ? .photos : .text) : .bottles }
+    private var search: String { searchBinding.wrappedValue }
+    private var sortBinding: Binding<SortOrder> { showingCocktails ? $cocktailSortOrder : $bottleSortOrder }
+    private var sortOrder: SortOrder { sortBinding.wrappedValue }
     private var usedCategories: [String] { CategoryHistory.suggestions(from: drinks.map(\.category)) }
+    private var usableCocktails: [CocktailRecipe] { cocktails.filter { CocktailAdmission.accepts(ingredients: $0.ingredients, steps: $0.steps) } }
+    private func matchesBook(_ recipe: CocktailRecipe, book: CocktailCollectionBook) -> Bool { book.includes(hasPhoto: cocktailPhotoIDs.contains(recipe.id)) }
     private var filteredCocktails: [CocktailRecipe] {
-        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        let result = cocktails.filter {
-            query.isEmpty || [$0.name, $0.ingredients, $0.steps, $0.notes, $0.sourceDescription].contains { $0.localizedStandardContains(query) }
+        let result = usableCocktails.filter {
+            matchesBook($0, book: cocktailBook) && CollectionSearch.matches(search,
+                fields: [$0.name, $0.ingredients, $0.steps, $0.notes, $0.sourceDescription, $0.glass, $0.garnish], cocktailName: $0.name)
         }
-        switch sortOrder {
-        case .newest: return result.sorted { $0.createdAt > $1.createdAt }
-        case .oldest: return result.sorted { $0.createdAt < $1.createdAt }
-        case .name: return result.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return result.sorted { lhs, rhs in
+            switch sortOrder {
+            case .newest: return lhs.createdAt == rhs.createdAt ? lhs.id.uuidString < rhs.id.uuidString : lhs.createdAt > rhs.createdAt
+            case .oldest: return lhs.createdAt == rhs.createdAt ? lhs.id.uuidString < rhs.id.uuidString : lhs.createdAt < rhs.createdAt
+            case .name:
+                let comparison = lhs.name.localizedStandardCompare(rhs.name)
+                return comparison == .orderedSame ? lhs.id.uuidString < rhs.id.uuidString : comparison == .orderedAscending
+            }
         }
     }
     private var filtered: [Drink] {
-        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
         let result = drinks.filter { drink in
             (category == nil || drink.category.compare(category ?? "", options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame) &&
-            (query.isEmpty || drink.name.localizedStandardContains(query) || drink.notes.localizedStandardContains(query) || drink.category.localizedStandardContains(query) || (drink.tasteVariant ?? "").localizedStandardContains(query) || (drink.bottleYear ?? "").localizedStandardContains(query))
+            CollectionSearch.matches(search, fields: [drink.name, drink.notes, drink.category, drink.tasteVariant ?? "", drink.bottleYear ?? ""])
         }
         switch sortOrder {
         case .newest: return result.sorted { $0.collectionDate > $1.collectionDate }
@@ -69,8 +94,19 @@ struct CollectionView: View {
             DrinkDetailView(drink: drink, store: store, enrichment: enrichment) { cleanupWarning = $0 }
         }
         .sheet(item: $selectedCocktail) { recipe in CocktailDetailView(recipe: recipe, store: store, enrichment: enrichment) }
-        .onChange(of: cocktails.map(\.id), initial: true) { _, _ in enrichment?.startPending() }
-        .onChange(of: showingCocktails) { _, _ in search = ""; category = nil }
+        .onChange(of: store.recommendationRevision, initial: true) { _, _ in enrichment?.startPending() }
+        .onChange(of: cocktails.map(\.id)) { _, _ in enrichment?.startPending() }
+        .onChange(of: currentShelf, initial: true) { _, shelf in onShelfChange?(shelf) }
+        .task(id: CocktailPhotoInventoryKey(ids: cocktails.map(\.id), revision: store.cocktailImageRevision)) {
+            photoInventoryLoaded = false
+            let ids = cocktails.map(\.id), images = store.cocktailImages
+            let available = await Task.detached {
+                Set(ids.filter { FileManager.default.fileExists(atPath: images.imageURL(for: $0, original: true).path) })
+            }.value
+            guard !Task.isCancelled else { return }
+            cocktailPhotoIDs = available
+            photoInventoryLoaded = true
+        }
         .onChange(of: usedCategories) { _, values in
             if let category, !values.contains(category) { self.category = nil }
         }
@@ -85,19 +121,28 @@ struct CollectionView: View {
             Rectangle().fill(Palette.ink.opacity(0.4)).frame(width: 2)
             VStack(alignment: .leading, spacing: 0) {
                 header
+                VStack(alignment: .leading, spacing: 18) {
+                    collectionBar
+                }.padding(.horizontal, 34).padding(.top, 24).padding(.bottom, 20)
+                    .background(Palette.paper)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 26) {
                         if !showingCocktails && drinks.isEmpty { welcomeBanner }
-                        collectionBar
-                        if showingCocktails, let recommendationMessage {
-                            Text(recommendationMessage).font(.pixel(size: 11)).foregroundStyle(Palette.purple)
+                        if showingCocktails, let message = enrichment?.recommendationMessage ?? recommendationMessage {
+                            Text(message).font(.pixel(size: 11)).foregroundStyle(Palette.purple)
                         }
                         if showingCocktails {
-                            if filteredCocktails.isEmpty { cocktailEmptyState }
+                            if !photoInventoryLoaded {
+                                ProgressView("正在检查成品照片…").frame(maxWidth: .infinity).padding(40)
+                            } else if filteredCocktails.isEmpty { cocktailEmptyState }
                             else {
                                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 20)], alignment: .leading, spacing: 22) {
                                     ForEach(filteredCocktails) { recipe in
-                                        CocktailCard(recipe: recipe, store: store, enrichment: enrichment) { selectedCocktail = recipe }
+                                        if cocktailBook == .photos {
+                                            CocktailCard(recipe: recipe, store: store, enrichment: enrichment) { selectedCocktail = recipe }
+                                        } else {
+                                            CocktailTextCard(recipe: recipe) { selectedCocktail = recipe }
+                                        }
                                     }
                                 }
                             }
@@ -110,7 +155,7 @@ struct CollectionView: View {
                                 }
                             }
                         }
-                    }.padding(.horizontal, 34).padding(.top, 28).padding(.bottom, 36)
+                    }.padding(.horizontal, 34).padding(.top, 6).padding(.bottom, 36)
                 }
             }.background(PixelPaper())
         }
@@ -132,13 +177,16 @@ struct CollectionView: View {
             Text("收藏每一口的故事").font(.pixel(size: 10)).foregroundStyle(Palette.muted).padding(.leading, 33)
             Text("我的收藏册").font(.pixel(size: 10, weight: .semibold)).foregroundStyle(Palette.muted)
                 .padding(.top, 44).padding(.bottom, 12)
-            sidebarRow("藏酒屋", symbol: "square.grid.2x2.fill", count: drinks.count, selected: !showingCocktails && category == nil) { showingCocktails = false; category = nil }
-            sidebarRow("蒙汗药", symbol: "wineglass", count: cocktails.count, selected: showingCocktails) { showingCocktails = true }
+            CollectionShelfNavigation(selection: Binding(get: { showingCocktails ? (cocktailBook == .photos ? .photos : .text) : .bottles }, set: { shelf in
+                showingCocktails = shelf != .bottles
+                category = nil
+                if shelf != .bottles { cocktailBook = shelf == .photos ? .photos : .text }
+            }), bottleCount: drinks.count, photoCount: usableCocktails.filter { matchesBook($0, book: .photos) }.count, textCount: usableCocktails.filter { matchesBook($0, book: .text) }.count)
             Text(showingCocktails ? "配方与调配记忆" : "按酒类探索").font(.pixel(size: 10, weight: .semibold)).foregroundStyle(Palette.muted)
                 .padding(.top, 31).padding(.bottom, 12)
             ScrollView {
                 if showingCocktails {
-                    Text("把酒瓶推荐的喝法收进这里，\n记录材料、比例与调配步骤。")
+                    Text(cocktailBook == .photos ? "把成品画面和制作方法，\n一起收进杯中画。" : "一页酒单，一份完整配方。\n照着调酒笺复现喜欢的喝法。")
                         .font(.pixel(size: 11)).foregroundStyle(Palette.muted).lineSpacing(6).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10)
                 } else {
                     VStack(spacing: 5) {
@@ -184,8 +232,8 @@ struct CollectionView: View {
     private var header: some View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 7) {
-                Text(showingCocktails ? "YOUR COCKTAIL COLLECTION" : "YOUR BOTTLE COLLECTION").font(.pixel(size: 9, weight: .semibold, design: .monospaced)).tracking(2).foregroundStyle(Palette.muted)
-                Text(showingCocktails ? "把喜欢的喝法，变成自己的配方。" : "每一瓶，都是一段值得收藏的记忆。").font(.pixel(size: 11)).foregroundStyle(Palette.muted)
+                Text(showingCocktails ? (cocktailBook == .photos ? "YOUR COCKTAIL GALLERY" : "YOUR RECIPE MENU") : "YOUR BOTTLE COLLECTION").font(.pixel(size: 9, weight: .semibold, design: .monospaced)).tracking(2).foregroundStyle(Palette.muted)
+                Text(showingCocktails ? (cocktailBook == .photos ? "把喜欢的画面，和配方一起收藏。" : "把值得复现的喝法，写成一页酒单。") : "每一瓶，都是一段值得收藏的记忆。").font(.pixel(size: 11)).foregroundStyle(Palette.muted)
             }
             Spacer()
             SettingsLink { PixelGlyph(kind: .settings, size: 20).padding(10) }
@@ -228,23 +276,24 @@ struct CollectionView: View {
         HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(showingCocktails ? "\(filteredCocktails.count) 份配方" : "\(filtered.count) 款收藏").font(.pixel(size: 15, weight: .semibold))
-                Text(showingCocktails ? "材料、用量与步骤，都留在这里" : "\(Set(drinks.map(\.category)).count) 个酒类 · 每一瓶都独一无二")
+                Text(showingCocktails ? (cocktailBook == .photos ? "成品照片与完整配方，一起收藏" : "没有照片，也有值得复现的配方") : "\(Set(drinks.map(\.category)).count) 个酒类 · 每一瓶都独一无二")
                     .font(.pixel(size: 10)).foregroundStyle(Palette.muted)
             }
             Spacer()
             if showingCocktails, !drinks.isEmpty {
-                Button(collectingRecommendations ? "正在收录…" : "收录酒瓶推荐") { collectExistingRecommendations() }
-                    .buttonStyle(.borderless).font(.pixel(size: 11)).tint(Palette.purple).disabled(collectingRecommendations)
+                Button(collectingRecommendations || enrichment?.isCollectingRecommendations == true ? "正在核对配方…" : "收录酒瓶推荐") { collectExistingRecommendations() }
+                    .buttonStyle(.borderless).font(.pixel(size: 11)).tint(Palette.purple).disabled(collectingRecommendations || enrichment?.isCollectingRecommendations == true)
             }
             HStack(spacing: 8) {
                 PixelGlyph(kind: .search, size: 18).foregroundStyle(Palette.muted)
-                TextField(showingCocktails ? "搜索配方、材料或酒瓶" : "搜索酒名、口味、年份或备注", text: $search).textFieldStyle(.plain).font(.pixel(size: 11))
-                if !search.isEmpty { Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(Palette.muted) }
+                TextField(showingCocktails ? "搜索配方、材料、杯型或酒瓶" : "搜索酒名、口味、年份或备注", text: searchBinding).textFieldStyle(.plain).font(.pixel(size: 11))
+                    .help("多个关键词用空格分开，例如「金酒 2020」；配方支持常见中英文名称。")
+                if !search.isEmpty { Button { searchBinding.wrappedValue = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).foregroundStyle(Palette.muted).accessibilityLabel("清空搜索") }
             }.padding(10).frame(width: 220).background(.white, in: PixelFrame(cornerRadius: 8))
                 .overlay(PixelFrame(cornerRadius: 8).stroke(Palette.line))
             Menu {
                 ForEach(SortOrder.allCases, id: \.self) { order in
-                    Button(order.rawValue) { sortOrder = order }
+                    Button(order.rawValue) { sortBinding.wrappedValue = order }
                 }
             } label: { Label(sortOrder.rawValue, systemImage: "arrow.up.arrow.down").font(.pixel(size: 10)) }
             .menuStyle(.borderlessButton).fixedSize()
@@ -262,7 +311,7 @@ struct CollectionView: View {
             if drinks.isEmpty {
                 Button { isAdding = true } label: { Label("收藏第一瓶", systemImage: "plus") }.buttonStyle(PrimaryButton()).padding(.top, 6)
             } else {
-                Button("查看全部收藏") { search = ""; category = nil }.buttonStyle(.borderless).tint(Palette.purple)
+                Button("查看全部收藏") { bottleSearch = ""; category = nil }.buttonStyle(.borderless).tint(Palette.purple)
             }
         }.frame(maxWidth: .infinity).frame(minHeight: drinks.isEmpty ? 236 : 350)
             .background(.white.opacity(0.55), in: PixelFrame(cornerRadius: 14))
@@ -271,14 +320,22 @@ struct CollectionView: View {
 
     private var cocktailEmptyState: some View {
         VStack(spacing: 16) {
-            PixelGlyph(kind: cocktails.isEmpty ? .glass : .search, size: 45).foregroundStyle(Palette.purple)
-            Text(cocktails.isEmpty ? "收藏第一份调配方法" : "没有找到这份配方").font(.pixel(size: 19, weight: .semibold))
-            Text(cocktails.isEmpty ? "收藏酒瓶时，可以把推荐喝法一起收进来。\n也可以直接新建，记录自己的材料、比例和步骤。" : "试试鸡尾酒名称、材料或关联酒瓶名称。")
+            PixelGlyph(kind: usableCocktails.isEmpty ? .glass : .search, size: 45).foregroundStyle(Palette.purple)
+            Text(cocktailEmptyTitle).font(.pixel(size: 19, weight: .semibold))
+            Text(usableCocktails.isEmpty ? "有材料、用量与步骤的推荐，才会收进这里。\n也可以新建一份能照着制作的配方。" : "切换另一册，或试试其他名称、材料与杯型。")
                 .font(.pixel(size: 12)).foregroundStyle(Palette.muted).lineSpacing(6).multilineTextAlignment(.center)
-            if cocktails.isEmpty {
+            if usableCocktails.isEmpty {
                 Button { isAdding = true } label: { Label("新建配方", systemImage: "plus") }.buttonStyle(PrimaryButton())
-            } else { Button("查看全部配方") { search = "" }.buttonStyle(.borderless).tint(Palette.purple) }
+            } else { Button(search.isEmpty ? "查看另一册" : "清空搜索") { if cocktailSearch.isEmpty { cocktailBook = cocktailBook == .photos ? .text : .photos } else { cocktailSearch = "" } }.buttonStyle(.borderless).tint(Palette.purple) }
         }.frame(maxWidth: .infinity).frame(minHeight: 350).background(.white.opacity(0.55), in: PixelFrame(cornerRadius: 15))
+    }
+
+    private var cocktailEmptyTitle: String {
+        if usableCocktails.isEmpty { return "收藏第一份调配方法" }
+        if search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return cocktailBook == .photos ? "暂时没有成品照片，去调酒笺看看" : "每份配方都有照片了，去杯中画看看"
+        }
+        return "没有找到符合条件的配方"
     }
 
     private func collectExistingRecommendations() {
@@ -294,8 +351,8 @@ struct CollectionView: View {
                         count += try store.collectRecommendations(knowledge, for: drink).count
                     }
                 }
-                recommendationMessage = count == 0 ? "现有酒瓶还没有推荐喝法，可以在详情中补充 AI 资料。" : "已收录酒瓶推荐；相同喝法已合并，配方与成品图会继续补充。"
-                enrichment?.startPending()
+                recommendationMessage = count == 0 ? "现有酒瓶还没有推荐喝法，可以在详情中补充 AI 资料。" : "正在核对推荐的材料、用量与步骤；只有完整配方才会收录。"
+                enrichment?.startPending(retryRecommendations: true)
             } catch { recommendationMessage = error.localizedDescription }
         }
     }

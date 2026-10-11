@@ -1,3 +1,4 @@
+import SipfolioTestSupport
 import Testing
 import Foundation
 import ImageIO
@@ -5,7 +6,7 @@ import ImageIO
 
 @Test
 func realBottleBecomesTransparentSticker() async throws {
-    let url = try #require(Bundle.module.url(forResource: "hendricks", withExtension: "jpg", subdirectory: "Fixtures"))
+    let url = try #require(TestResources.url(forResource: "hendricks", withExtension: "jpg"))
     let service = BottleCutoutService()
     let photo = try await service.loadPhoto(at: url)
     let candidates = try await service.cutout(from: photo)

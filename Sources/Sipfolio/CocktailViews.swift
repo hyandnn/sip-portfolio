@@ -38,6 +38,7 @@ struct CocktailEditorView: View {
     }
 
     private var bottleName: String { recipe?.sourceDescription ?? seed.sourceDrinkName ?? "" }
+    private var canSave: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && CocktailAdmission.accepts(ingredients: ingredients, steps: steps) }
     private var hasDetails: Bool { !ingredients.isEmpty || !steps.isEmpty || !glass.isEmpty || !garnish.isEmpty || !notes.isEmpty }
 
     var body: some View {
@@ -72,9 +73,11 @@ struct CocktailEditorView: View {
                             .font(.pixel(size: 10)).foregroundStyle(Palette.muted).lineSpacing(3)
                         if generatedByAI { Label("已填入 AI 建议，所有内容均可修改", systemImage: "checkmark.circle").font(.pixel(size: 10)).foregroundStyle(Palette.purple) }
                     }
+                    Text("用量可保留原配方的写法；能换算的液体优先显示比例，冰块、装饰和不能换算的描述保持原样。")
+                        .font(.pixel(size: 10)).foregroundStyle(Palette.muted)
                     HStack(alignment: .top, spacing: 18) {
-                        textArea("材料与用量", placeholder: "每行一种材料，如：\n金酒 — 45 ml\n汤力水 — 120 ml\n冰块 — 适量", text: $ingredients, height: 166)
-                        textArea("调配步骤", placeholder: "记录操作顺序，如：\n1. 杯中加入冰块。\n2. 倒入金酒和汤力水。\n3. 轻轻搅拌。", text: $steps, height: 166)
+                        textArea("材料与用量 *", placeholder: "每行一种材料，如：\n金酒 — 45 ml\n汤力水 — 120 ml\n冰块 — 适量", text: $ingredients, height: 166)
+                        textArea("调配步骤 *", placeholder: "记录操作顺序，如：\n1. 杯中加入冰块。\n2. 倒入金酒和汤力水。\n3. 轻轻搅拌。", text: $steps, height: 166)
                     }
                     HStack(alignment: .top, spacing: 18) {
                         labeledField("杯型", placeholder: "如高球杯（可留空）", text: $glass)
@@ -85,11 +88,11 @@ struct CocktailEditorView: View {
             }
             Divider()
             HStack {
-                Text("配方保存在这台 Mac 上").font(.pixel(size: 10)).foregroundStyle(Palette.muted)
+                Text(canSave ? "材料与步骤齐全，可以收录" : "填写材料与制作步骤后可收录").font(.pixel(size: 10)).foregroundStyle(Palette.muted)
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(recipe == nil ? "收进蒙汗药" : "保存修改") { save() }.buttonStyle(PrimaryButton())
-                    .disabled(generating || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button(recipe == nil ? "收进配方册" : "保存修改") { save() }.buttonStyle(PrimaryButton())
+                    .disabled(generating || !canSave)
             }.padding(22)
         }.frame(width: 700, height: 730).background(Palette.paper).foregroundStyle(Palette.ink).font(.pixel(size: 12)).buttonStyle(PixelSecondaryButton()).preferredColorScheme(.light)
             .onDisappear { aiTask?.cancel() }
@@ -168,12 +171,12 @@ struct CocktailCard: View {
                     PixelFrame(cornerRadius: 10).fill(Palette.purple.opacity(0.08))
                     if hasPhoto {
                         StoredPhoto(url: store.cocktailImages.imageURL(for: recipe.id, original: true), contentMode: .fill)
-                            .id(store.cocktailImageRevision)
+                            .id(store.cocktailImageRevision).allowsHitTesting(false)
                     } else {
                         VStack(spacing: 12) {
-                            PixelGlyph(kind: .glass, size: 45).foregroundStyle(Palette.purple)
+                            CocktailGlassPlaceholder(glass: recipe.glass).foregroundStyle(Palette.purple)
                             if enrichment?.activeIDs.contains(recipe.id) == true { ProgressView().controlSize(.small) }
-                            Text(enrichment?.activeIDs.contains(recipe.id) == true ? "正在查找配方与成品图…" : "成品图待补充").font(.pixel(size: 10)).foregroundStyle(Palette.muted)
+                            Text(enrichment?.activeIDs.contains(recipe.id) == true ? "正在匹配最佳封面…" : "暂无匹配照片 · 配方已保留").font(.pixel(size: 10)).foregroundStyle(Palette.muted)
                         }
                     }
                 }.frame(height: 205).clipShape(PixelFrame(cornerRadius: 10))
@@ -181,7 +184,7 @@ struct CocktailCard: View {
                 if !recipe.sourceDescription.isEmpty {
                     Label(recipe.sourceDescription, systemImage: "link").font(.pixel(size: 10)).foregroundStyle(Palette.purple).lineLimit(1).frame(height: 14, alignment: .leading)
                 } else { Text(" ").font(.pixel(size: 10)).frame(height: 14).accessibilityHidden(true) }
-                Text(recipe.ingredients.isEmpty ? "材料待补充" : recipe.ingredients)
+                Text(CocktailAmounts.presentation(recipe.ingredients).text)
                     .font(.pixel(size: 11)).foregroundStyle(Palette.muted).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading).frame(height: 58, alignment: .topLeading)
                 HStack {
                     Text(recipe.glass.isEmpty ? "私人配方" : recipe.glass).font(.pixel(size: 9)).foregroundStyle(Palette.muted)
@@ -191,7 +194,7 @@ struct CocktailCard: View {
             }.padding(15).frame(maxWidth: .infinity, alignment: .leading).background(.white, in: PixelFrame(cornerRadius: 15))
                 .overlay(PixelFrame(cornerRadius: 15).strokeBorder(Palette.ink.opacity(0.5), lineWidth: 2))
                 .shadow(color: Palette.ink.opacity(0.13), radius: 0, x: 4, y: 4)
-        }.buttonStyle(.plain).accessibilityLabel("\(recipe.name)，查看配方")
+        }.contentShape(PixelFrame(cornerRadius: 15)).buttonStyle(.plain).accessibilityLabel("\(recipe.name)，查看配方")
             .task(id: store.cocktailImageRevision) { hasPhoto = FileManager.default.fileExists(atPath: store.cocktailImages.imageURL(for: recipe.id, original: true).path) }
     }
 }
@@ -207,6 +210,7 @@ struct CocktailDetailView: View {
     @State private var error: String?
     @State private var photoMetadata: CocktailPhotoMetadata?
     @State private var photoEditing = false
+    @State private var photoSearching = false
 
     var body: some View {
         Group {
@@ -214,7 +218,7 @@ struct CocktailDetailView: View {
             else {
                 VStack(spacing: 0) {
                     HStack {
-                        Label("蒙汗药 · 鸡尾酒配方", systemImage: "wineglass").font(.pixel(size: 11, weight: .semibold)).foregroundStyle(Palette.purple)
+                        Label("鸡尾酒配方", systemImage: "wineglass").font(.pixel(size: 11, weight: .semibold)).foregroundStyle(Palette.purple)
                         Spacer()
                         Button { dismiss() } label: { Image(systemName: "xmark").padding(8) }.buttonStyle(.plain).accessibilityLabel("关闭配方详情")
                     }.padding(25)
@@ -241,8 +245,17 @@ struct CocktailDetailView: View {
                                         .buttonStyle(.borderless).tint(Palette.purple).disabled(enrichment.activeIDs.contains(recipe.id))
                                 }
                             }.font(.pixel(size: 11))
-                            if let message = enrichment?.errors[recipe.id] { Text(message).font(.pixel(size: 11)).foregroundStyle(Palette.muted) }
-                            section("材料与用量", text: recipe.ingredients.isEmpty ? "还没有填写材料。" : recipe.ingredients)
+                            Button(photoSearchTitle) { photoSearching = true }
+                                .buttonStyle(.borderless).tint(Palette.purple).font(.pixel(size: 12))
+                            if photoMetadata == nil, let message = enrichment?.errors[recipe.id] { Text(message).font(.pixel(size: 11)).foregroundStyle(Palette.muted) }
+                            let amounts = CocktailAmounts.presentation(recipe.ingredients)
+                            section(amounts.usesRatio ? "材料与比例" : "材料与用量", text: amounts.text)
+                            if amounts.usesRatio {
+                                Text("任选一个量作 1 份，所有液体按份数同比增加。冰块、装饰和适量单独处理。")
+                                    .font(.pixel(size: 11)).foregroundStyle(Palette.muted)
+                                DisclosureGroup("查看原始用量") { Text(amounts.original).font(.pixel(size: 12)).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8) }
+                                    .font(.pixel(size: 11)).tint(Palette.purple)
+                            }
                             section("调配步骤", text: recipe.steps.isEmpty ? "还没有填写调配步骤。" : recipe.steps)
                             if !recipe.glass.isEmpty || !recipe.garnish.isEmpty {
                                 HStack(alignment: .top, spacing: 35) {
@@ -263,6 +276,11 @@ struct CocktailDetailView: View {
                                     Text("图片来源：\(metadata.provider)\(metadata.credit.isEmpty ? "" : " · \(metadata.credit)")").font(.pixel(size: 10)).foregroundStyle(Palette.muted)
                                     if let page = metadata.pageURL.flatMap(URL.init(string:)) { Link("查看成品图所在页面", destination: page).font(.pixel(size: 10)) }
                                     if let source = metadata.photoSourceURL.flatMap(URL.init(string:)) { Link("查看原始图片来源", destination: source).font(.pixel(size: 10)) }
+                                    if let license = metadata.license, let licenseURL = metadata.licenseURL.flatMap(URL.init(string:)) {
+                                        Link("图片许可：\(license)", destination: licenseURL).font(.pixel(size: 12))
+                                        Text("保留背景，已缩放并统一展示尺寸。来源与许可随照片保存在本地。")
+                                            .font(.pixel(size: 12)).foregroundStyle(Palette.muted)
+                                    }
                                     if metadata.provider == "TheCocktailDB" {
                                         Text("图片为该喝法的示意，配方版本可能不同。")
                                             .font(.pixel(size: 10)).foregroundStyle(Palette.muted)
@@ -282,6 +300,9 @@ struct CocktailDetailView: View {
         }
         .sheet(isPresented: $editing) { CocktailEditorView(store: store, recipe: recipe) }
         .sheet(isPresented: $photoEditing) { CocktailPhotoEditorView(recipeID: recipe.id, store: store) }
+        .sheet(isPresented: $photoSearching) {
+            CocktailPhotoSearchView(recipeID: recipe.id, recipeName: recipe.name, store: store, service: enrichment?.photoService ?? CocktailPhotoService(), candidates: enrichment?.candidates(for: recipe.id, name: recipe.name) ?? [])
+        }
         .task(id: store.cocktailImageRevision) { photoMetadata = try? store.cocktailPhotoMetadata(for: recipe.id) }
         .alert("删除这份配方？", isPresented: $confirmingDelete) {
             Button("取消", role: .cancel) {}
@@ -294,6 +315,10 @@ struct CocktailDetailView: View {
         .alert("操作未完成", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             Button("好", role: .cancel) { error = nil }
         } message: { Text(error ?? "请重试。") }
+    }
+
+    private var photoSearchTitle: String {
+        photoMetadata == nil ? "查找成品照片" : "换一张网上照片"
     }
 
     private func section(_ title: String, text: String) -> some View {

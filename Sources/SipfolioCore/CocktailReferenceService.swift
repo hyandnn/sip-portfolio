@@ -19,9 +19,13 @@ public struct CocktailPhotoMetadata: Codable, Sendable, Equatable {
     public let creativeCommonsConfirmed: Bool
     public let usesOriginalPhoto: Bool
     public let savedAt: Date
-    public init(provider: String, pageURL: String? = nil, photoURL: String? = nil, photoSourceURL: String? = nil, credit: String = "", creativeCommonsConfirmed: Bool = false, usesOriginalPhoto: Bool = false, savedAt: Date = .now) {
+    public var license: String? = nil
+    public var licenseURL: String? = nil
+    public var searchTerm: String? = nil
+    public init(provider: String, pageURL: String? = nil, photoURL: String? = nil, photoSourceURL: String? = nil, credit: String = "", creativeCommonsConfirmed: Bool = false, usesOriginalPhoto: Bool = false, savedAt: Date = .now, license: String? = nil, licenseURL: String? = nil, searchTerm: String? = nil) {
         self.provider = provider; self.pageURL = pageURL; self.photoURL = photoURL; self.photoSourceURL = photoSourceURL
         self.credit = credit; self.creativeCommonsConfirmed = creativeCommonsConfirmed; self.usesOriginalPhoto = usesOriginalPhoto; self.savedAt = savedAt
+        self.license = license; self.licenseURL = licenseURL; self.searchTerm = searchTerm
     }
 }
 
@@ -98,61 +102,145 @@ public actor CocktailReferenceService {
 public final class CocktailEnrichmentCoordinator {
     public private(set) var activeIDs: Set<UUID> = []
     public private(set) var errors: [UUID: String] = [:]
+    public private(set) var recommendationMessage: String?
+    public private(set) var isCollectingRecommendations = false
+    private var attemptedRecommendations: Set<String> = []
+    public private(set) var photoCandidates: [UUID: [CocktailPhotoCandidate]] = [:]
+    public let photoService: CocktailPhotoService
+    private var candidateNames: [UUID: String] = [:]
     private let store: CollectionStore
     private let referenceService: CocktailReferenceService
     private let imageService = BottleCutoutService()
     private var pending: [UUID] = []
     private var worker: Task<Void, Never>?
 
-    public init(store: CollectionStore, referenceService: CocktailReferenceService = CocktailReferenceService()) {
+    public init(store: CollectionStore, referenceService: CocktailReferenceService = CocktailReferenceService(), photoService: CocktailPhotoService = CocktailPhotoService()) {
         self.store = store; self.referenceService = referenceService
+        self.photoService = photoService
     }
 
-    public func startPending() {
+    public var isWorking: Bool { worker != nil }
+
+    public func startPending(retryRecommendations: Bool = false) {
+        do { try store.restoreUsableArchivedCocktails(); try store.archiveIncompleteCocktails() }
+        catch { recommendationMessage = "旧配方整理未完成：\(error.localizedDescription)"; return }
+        if retryRecommendations { attemptedRecommendations.removeAll() }
         guard let recipes = try? store.allCocktails() else { return }
         for recipe in recipes where errors[recipe.id] == nil {
-            let missingPhoto = !FileManager.default.fileExists(atPath: store.cocktailImages.imageURL(for: recipe.id, original: true).path)
-            if missingPhoto || recipe.ingredients.isEmpty || recipe.steps.isEmpty { enqueue(recipe.id) }
+            let missingPhoto = !hasPhoto(recipe.id)
+            if missingPhoto { enqueue(recipe.id) }
         }
         startWorker()
     }
 
-    public func retry(_ id: UUID) { errors[id] = nil; enqueue(id); startWorker() }
+    public func retry(_ id: UUID) { errors[id] = nil; photoCandidates[id] = nil; enqueue(id); startWorker() }
+    public func candidates(for id: UUID, name: String) -> [CocktailPhotoCandidate] {
+        guard candidateNames[id] == CocktailNames.key(name) else { return [] }
+        return photoCandidates[id] ?? []
+    }
     private func enqueue(_ id: UUID) {
         guard !activeIDs.contains(id), !pending.contains(id) else { return }
         pending.append(id); activeIDs.insert(id)
     }
     private func startWorker() {
-        guard worker == nil, !pending.isEmpty else { return }
+        guard worker == nil, !pending.isEmpty || store.pendingRecommendations.contains(where: { !attemptedRecommendations.contains($0.id) }) else { return }
         worker = Task { @MainActor in
-            while !pending.isEmpty, !Task.isCancelled {
+            var admitted = 0, skipped = 0
+            while !Task.isCancelled {
+                if let request = store.pendingRecommendations.first(where: { !attemptedRecommendations.contains($0.id) }) {
+                    attemptedRecommendations.insert(request.id)
+                    isCollectingRecommendations = true
+                    do {
+                        let existing = try store.allCocktails().first { CocktailNames.key($0.name) == request.id }
+                        let reference = existing == nil ? try await referenceService.lookup(name: request.name) : nil
+                        if let recipe = try store.admitRecommendation(request.id, reference: reference) {
+                            admitted += 1
+                            if !hasPhoto(recipe.id) { enqueue(recipe.id) }
+                        } else { try store.finishRecommendation(request.id); skipped += 1 }
+                    } catch CocktailReferenceError.notFound {
+                        do { try store.finishRecommendation(request.id); skipped += 1 }
+                        catch { recommendationMessage = error.localizedDescription }
+                    } catch {
+                        if !Task.isCancelled { recommendationMessage = "部分推荐暂时无法核对配方，可稍后重新收录。" }
+                    }
+                    isCollectingRecommendations = false
+                    continue
+                }
+                guard !pending.isEmpty else { break }
                 let id = pending.removeFirst()
                 await enrich(id)
                 activeIDs.remove(id)
             }
+            if admitted + skipped > 0 {
+                recommendationMessage = "已收录 \(admitted) 份可制作配方" + (skipped > 0 ? "；\(skipped) 个缺少完整配方的推荐已跳过。" : "。")
+            }
+            isCollectingRecommendations = false
             worker = nil
         }
     }
     private func enrich(_ id: UUID) async {
         guard let recipe = try? store.allCocktails().first(where: { $0.id == id }) else { return }
         let name = recipe.name
+        var reference: CocktailReference?
+        var recipeError: String?
         do {
-            let reference = try await referenceService.lookup(name: name)
+            let found = try await referenceService.lookup(name: name)
+            reference = found
             guard let current = try store.allCocktails().first(where: { $0.id == id }), CocktailNames.key(current.name) == CocktailNames.key(name) else { return }
-            try store.applyReference(reference, to: id)
-            // A user-selected photograph must survive reference refreshes.
-            if FileManager.default.fileExists(atPath: store.cocktailImages.imageURL(for: id, original: true).path) { return }
-            guard let photoURL = reference.photoURL else {
-                errors[id] = "已找到配方，但接口未提供可用的成品图；可以导入自己的照片。"
+            do { try store.applyReference(found, to: id) }
+            catch { errors[id] = error.localizedDescription; return }
+        } catch {
+            guard !Task.isCancelled else { return }
+            if !recipe.ingredients.isEmpty && !recipe.steps.isEmpty { recipeError = nil }
+            else { recipeError = "公开配方未补充：\(error.localizedDescription)" }
+        }
+        // Recipe lookup failures must not stop the independent photograph search.
+        guard isCurrent(id, name: name) else { return }
+        if hasPhoto(id) { errors[id] = recipeError; return }
+        if let reference, let photoURL = reference.photoURL {
+            do {
+                let downloaded = try await referenceService.downloadPhoto(photoURL)
+                let original = try await imageService.normalizedPNG(from: downloaded, maxPixelSize: 1600)
+                let thumbnail = try await imageService.normalizedPNG(from: original, maxPixelSize: 420)
+                guard isCurrent(id, name: name), !hasPhoto(id) else { return }
+                let metadata = CocktailPhotoMetadata(provider: "TheCocktailDB", pageURL: reference.pageURL.absoluteString, photoURL: photoURL.absoluteString, photoSourceURL: reference.photoSourceURL?.absoluteString, credit: reference.photoCredit, creativeCommonsConfirmed: reference.creativeCommonsConfirmed, usesOriginalPhoto: true)
+                do { try store.saveCocktailPhoto(id: id, original: original, sticker: original, thumbnail: thumbnail, metadata: metadata) }
+                catch { errors[id] = error.localizedDescription; return }
+                errors[id] = recipeError
                 return
+            } catch { guard !Task.isCancelled else { return } }
+        }
+        do {
+            let result = try await photoService.search(name: name)
+            guard isCurrent(id, name: name), !hasPhoto(id) else { return }
+            photoCandidates[id] = result.candidates
+            candidateNames[id] = CocktailNames.key(name)
+            // Try relevant images in ranked order. Saving still verifies the current source license.
+            for candidate in result.candidates {
+                guard isCurrent(id, name: name), !hasPhoto(id), !Task.isCancelled else { return }
+                do {
+                    let (data, metadata) = try await photoService.download(candidate, searchTerm: name, matchingName: name)
+                    let original = try await imageService.normalizedPNG(from: data, maxPixelSize: 1600)
+                    let thumbnail = try await imageService.normalizedPNG(from: original, maxPixelSize: 420)
+                    guard isCurrent(id, name: name), !hasPhoto(id), !Task.isCancelled else { return }
+                    do { try store.saveCocktailPhoto(id: id, original: original, sticker: original, thumbnail: thumbnail, metadata: metadata) }
+                    catch { errors[id] = error.localizedDescription; return }
+                    errors[id] = recipeError
+                    return
+                } catch { if Task.isCancelled { return } }
             }
-            let downloaded = try await referenceService.downloadPhoto(photoURL)
-            let original = try await imageService.normalizedPNG(from: downloaded, maxPixelSize: 1600)
-            let thumbnail = try await imageService.normalizedPNG(from: original, maxPixelSize: 420)
-            guard let latest = try store.allCocktails().first(where: { $0.id == id }), CocktailNames.key(latest.name) == CocktailNames.key(name),
-                  !FileManager.default.fileExists(atPath: store.cocktailImages.imageURL(for: id, original: true).path) else { return }
-            let metadata = CocktailPhotoMetadata(provider: "TheCocktailDB", pageURL: reference.pageURL.absoluteString, photoURL: photoURL.absoluteString, photoSourceURL: reference.photoSourceURL?.absoluteString, credit: reference.photoCredit, creativeCommonsConfirmed: reference.creativeCommonsConfirmed, usesOriginalPhoto: true)
-            try store.saveCocktailPhoto(id: id, original: original, sticker: original, thumbnail: thumbnail, metadata: metadata)
+            let photoMessage = result.candidates.isEmpty
+                ? "暂未找到可靠匹配的成品图，配方已保留；可换关键词或导入自己的照片。"
+                : "匹配照片暂时无法下载或核对来源；可重试或导入自己的照片。"
+            errors[id] = ([recipeError, photoMessage] + result.notices.map(Optional.some)).compactMap { $0 }.joined(separator: "\n")
         } catch { if !Task.isCancelled { errors[id] = error.localizedDescription } }
+    }
+
+    private func hasPhoto(_ id: UUID) -> Bool {
+        FileManager.default.fileExists(atPath: store.cocktailImages.imageURL(for: id, original: true).path)
+    }
+    private func isCurrent(_ id: UUID, name: String) -> Bool {
+        guard let recipe = try? store.allCocktails().first(where: { $0.id == id }) else { return false }
+        return CocktailNames.key(recipe.name) == CocktailNames.key(name)
     }
 }
