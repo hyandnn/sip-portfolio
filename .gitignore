@@ -2,6 +2,7 @@
 build/
 .swiftpm/
 .local-data/
+.local/
 .DS_Store
 
 # Local secrets and collection databases
@@ -15,9 +16,21 @@ build/
 *.sqlite-shm
 *.sqlite-wal
 *.db
+*.log
+*.dmg
+*.xcarchive
+*.app/
+
+# Runtime data, even if an isolated data directory is placed in the checkout
+Images/
+CocktailImages/
+recommendations.json
+incomplete-recipes-archive.json
 
 # Machine-specific editor state
 *.xcuserstate
 xcuserdata/
 .idea/
 .vscode/
+__pycache__/
+*.pyc

@@ -11,7 +11,8 @@ let package = Package(
     targets: [
         .target(name: "SipfolioCore"),
         .executableTarget(name: "Sipfolio", dependencies: ["SipfolioCore"], resources: [.copy("Resources")]),
-        .testTarget(name: "SipfolioCoreTests", dependencies: ["SipfolioCore"], resources: [.copy("Fixtures")]),
-        .testTarget(name: "SipfolioUITests", dependencies: ["Sipfolio", "SipfolioCore"])
+        .target(name: "SipfolioTestSupport", path: "Tests/SipfolioTestSupport", resources: [.copy("Fixtures")]),
+        .testTarget(name: "SipfolioCoreTests", dependencies: ["SipfolioCore", "SipfolioTestSupport"]),
+        .testTarget(name: "SipfolioUITests", dependencies: ["Sipfolio", "SipfolioCore", "SipfolioTestSupport"])
     ]
 )

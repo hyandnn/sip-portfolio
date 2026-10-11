@@ -55,13 +55,15 @@ struct PixelPaper: View {
 }
 
 struct PixelGlyph: View {
-    enum Kind { case bottle, glass, sparkle, plus, search, settings, arrow }
+    enum Kind { case bottle, glass, highball, rocks, sparkle, plus, search, settings, arrow }
     let kind: Kind
     var size: CGFloat = 20
     private var rows: [String] {
         switch kind {
         case .bottle: ["000111000", "000101000", "000101000", "001111100", "011000110", "010111010", "010101010", "010111010", "011111110"]
         case .glass: ["111111111", "010000010", "001000100", "000101000", "000010000", "000010000", "000010000", "000010000", "001111100"]
+        case .highball: ["001111100", "001000100", "001010100", "001000100", "001010100", "001000100", "001010100", "001000100", "001111100"]
+        case .rocks: ["000000000", "000000000", "011111110", "010000010", "010110010", "010001010", "010100010", "010000010", "011111110"]
         case .sparkle: ["000010000", "000010000", "000111000", "001111100", "111111111", "001111100", "000111000", "000010000", "000010000"]
         case .plus: ["000000000", "000110000", "000110000", "011111110", "011111110", "000110000", "000110000", "000000000", "000000000"]
         case .search: ["001111000", "010000100", "100000010", "100000010", "010000100", "001111000", "000000100", "000000010", "000000001"]
@@ -80,6 +82,18 @@ struct PixelGlyph: View {
             }
         }.frame(width: size, height: size).accessibilityHidden(true)
     }
+}
+
+struct CocktailGlassPlaceholder: View {
+    let glass: String
+    var size: CGFloat = 45
+    private var kind: PixelGlyph.Kind {
+        let glass = glass.lowercased()
+        if ["highball", "collins", "高球", "柯林", "科林"].contains(where: glass.contains) { return .highball }
+        if ["old fashioned", "old-fashioned", "rocks", "古典", "岩石"].contains(where: glass.contains) { return .rocks }
+        return .glass
+    }
+    var body: some View { PixelGlyph(kind: kind, size: size) }
 }
 
 enum Palette {

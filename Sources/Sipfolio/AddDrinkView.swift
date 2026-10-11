@@ -270,9 +270,9 @@ struct AddDrinkView: View {
                 Label("已采用 AI 建议，酒款资料将一同保存", systemImage: "checkmark.circle.fill")
                     .font(.pixel(size: 9)).foregroundStyle(Palette.purple)
                 if let count = draft.acceptedKnowledge?.cocktails.count, count > 0 {
-                    Toggle("同时收录 \(count) 种推荐喝法到「蒙汗药」", isOn: $draft.includeRecommendedCocktails)
+                    Toggle("核对 \(count) 种推荐，有完整配方时收进配方册", isOn: $draft.includeRecommendedCocktails)
                         .toggleStyle(.checkbox).font(.pixel(size: 10))
-                    Text("保存酒瓶后自动收录，并联网查找配方与成品图。")
+                    Text("先核对材料与制作步骤，再收录并补图；用量可以保留原配方写法，只有名称的推荐会跳过。")
                         .font(.pixel(size: 9)).foregroundStyle(Palette.muted)
                 }
             }
