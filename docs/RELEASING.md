@@ -19,7 +19,7 @@ make dist
 1. 修改 Info.plist 的应用版本与构建号，更新 CHANGELOG 和 `packaging/RELEASE_NOTES.md`。
 2. 完成 `make audit`、相关测试、`make dist` 与产物检查，提交源码，确认分支 CI 通过。
 3. 为该提交创建对应 `v<version>` 标签并推送。
-4. 发布工作流检查标签与版本一致，执行 CI 测试并构建通用安装包，成功后创建 **prerelease** 并上传文件。
+4. 发布工作流检查标签与版本一致，执行 CI 测试并构建通用安装包。在 Apple Silicon 与 Intel runner 中分别验证归档启动，成功后创建 **prerelease** 并上传文件。
 
 流程只使用 GitHub Actions 自带的仓库令牌，不需要上传个人 API 密钥。发布作业单独申请写入 release 的权限，其余作业仅有读取权限。工作流失败时不发布；不要通过移动已有版本标签掩盖失败。
 
