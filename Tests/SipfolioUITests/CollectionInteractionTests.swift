@@ -41,7 +41,8 @@ func completeCollectionSwitchesBackFromTextBesideTallPhoto() async throws {
     let image = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 100, pixelsHigh: 1200, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
     let photo = try #require(image.representation(using: .png, properties: [:]))
     try store.saveCocktailPhoto(id: recipe.id, original: photo, sticker: photo, thumbnail: photo, metadata: .init(provider: "用户照片"))
-    let host = NSHostingView(rootView: CollectionView(store: store, isAdding: .constant(false), initiallyShowingCocktails: true).modelContainer(store.container))
+    var selectedShelf: CollectionShelf?
+    let host = NSHostingView(rootView: CollectionView(store: store, isAdding: .constant(false), initiallyShowingCocktails: true, onShelfChange: { selectedShelf = $0 }).modelContainer(store.container))
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 774), styleMask: .borderless, backing: .buffered, defer: false)
     window.contentView = host
     window.setFrameOrigin(NSPoint(x: -20000, y: -20000)); window.orderBack(nil)
@@ -49,11 +50,13 @@ func completeCollectionSwitchesBackFromTextBesideTallPhoto() async throws {
     host.frame = NSRect(x: 0, y: 0, width: 1180, height: 774)
     host.layoutSubtreeIfNeeded()
     try await Task.sleep(for: .milliseconds(300))
-    func snapshot() throws -> Data {
-        host.layoutSubtreeIfNeeded()
-        let bitmap = try #require(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: bitmap)
-        return try #require(bitmap.representation(using: .png, properties: [:]))
+    func waitForShelf(_ expected: CollectionShelf) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while selectedShelf != expected, ContinuousClock.now < deadline {
+            host.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(selectedShelf == expected)
     }
     func click(_ y: CGFloat) throws {
         let point = NSPoint(x: 90, y: y)
@@ -62,12 +65,11 @@ func completeCollectionSwitchesBackFromTextBesideTallPhoto() async throws {
             window.sendEvent(event)
         }
     }
-    let original = try snapshot()
+    // Observe the full view's selection after dispatched mouse events, not PNG equality.
+    // Font rasterization, async image loading and focus can differ across macOS runners.
+    try await waitForShelf(.photos)
     try click(461)
-    try await Task.sleep(for: .milliseconds(100))
-    let text = try snapshot()
-    #expect(text != original)
+    try await waitForShelf(.text)
     try click(526)
-    try await Task.sleep(for: .milliseconds(100))
-    #expect(try snapshot() == original)
+    try await waitForShelf(.photos)
 }

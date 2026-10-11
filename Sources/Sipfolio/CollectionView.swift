@@ -11,6 +11,7 @@ private struct CocktailPhotoInventoryKey: Equatable {
 struct CollectionView: View {
     let store: CollectionStore
     let enrichment: CocktailEnrichmentCoordinator?
+    private let onShelfChange: ((CollectionShelf) -> Void)?
     @Binding var isAdding: Bool
     @Query(sort: \Drink.createdAt, order: .reverse) private var drinks: [Drink]
     @Query(sort: \CocktailRecipe.createdAt, order: .reverse) private var cocktails: [CocktailRecipe]
@@ -32,13 +33,15 @@ struct CollectionView: View {
     @State private var recommendationMessage: String?
 
     enum SortOrder: String, CaseIterable { case newest = "最近收藏", oldest = "最早收藏", name = "名称排序" }
-    init(store: CollectionStore, isAdding: Binding<Bool>, initiallyShowingCocktails: Bool = false, enrichment: CocktailEnrichmentCoordinator? = nil, initialSearch: String = "", initialCocktailBook: CocktailCollectionBook = .photos) {
+    init(store: CollectionStore, isAdding: Binding<Bool>, initiallyShowingCocktails: Bool = false, enrichment: CocktailEnrichmentCoordinator? = nil, initialSearch: String = "", initialCocktailBook: CocktailCollectionBook = .photos, onShelfChange: ((CollectionShelf) -> Void)? = nil) {
         self.store = store; self.enrichment = enrichment; _isAdding = isAdding; _showingCocktails = State(initialValue: initiallyShowingCocktails)
+        self.onShelfChange = onShelfChange
         _bottleSearch = State(initialValue: initiallyShowingCocktails ? "" : initialSearch)
         _cocktailSearch = State(initialValue: initiallyShowingCocktails ? initialSearch : "")
         _cocktailBook = State(initialValue: initialCocktailBook)
     }
     private var searchBinding: Binding<String> { showingCocktails ? $cocktailSearch : $bottleSearch }
+    private var currentShelf: CollectionShelf { showingCocktails ? (cocktailBook == .photos ? .photos : .text) : .bottles }
     private var search: String { searchBinding.wrappedValue }
     private var sortBinding: Binding<SortOrder> { showingCocktails ? $cocktailSortOrder : $bottleSortOrder }
     private var sortOrder: SortOrder { sortBinding.wrappedValue }
@@ -93,6 +96,7 @@ struct CollectionView: View {
         .sheet(item: $selectedCocktail) { recipe in CocktailDetailView(recipe: recipe, store: store, enrichment: enrichment) }
         .onChange(of: store.recommendationRevision, initial: true) { _, _ in enrichment?.startPending() }
         .onChange(of: cocktails.map(\.id)) { _, _ in enrichment?.startPending() }
+        .onChange(of: currentShelf, initial: true) { _, shelf in onShelfChange?(shelf) }
         .task(id: CocktailPhotoInventoryKey(ids: cocktails.map(\.id), revision: store.cocktailImageRevision)) {
             photoInventoryLoaded = false
             let ids = cocktails.map(\.id), images = store.cocktailImages

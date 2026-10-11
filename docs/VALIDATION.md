@@ -31,7 +31,7 @@ CI 通过不代表 Vision 已验收。在有正常硬件访问的 Mac 上运行 
 make test TEST_FLAGS='--filter realBottleBecomesTransparentSticker'
 ```
 
-UI 测试使用离屏视图与测试自己的 AppKit 窗口，不操作正在使用的 Sipfolio。导航合成事件检查不替代生产应用的完整人工操作验收。
+UI 测试使用离屏视图与测试自己的 AppKit 窗口，不操作正在使用的 Sipfolio。导航通过合成鼠标事件和实际选中状态核对，不要求不同 macOS 下截图字节一致；这些检查不替代生产应用的完整人工操作验收。
 
 ## 可重复的界面预览
 
